@@ -1,0 +1,450 @@
+/* -----------------------------------------------------------------------------
+ * This file is part of SWIG, which is licensed as a whole under version 3 
+ * (or any later version) of the GNU General Public License. Some additional
+ * terms also apply to certain portions of SWIG. The full details of the SWIG
+ * license and copyrights can be found in the LICENSE and COPYRIGHT files
+ * included with the SWIG source code as distributed by the SWIG developers
+ * and at http://www.swig.org/legal.html.
+ *
+ * python.cxx
+ *
+ * Python language module for SWIG.
+ * ----------------------------------------------------------------------------- */
+
+#include "trace.h"
+
+#include "swigmod.h"
+#include "cparse.h"
+
+#include <stdio.h>
+
+static int no_header_file = 0;
+static File *f_begin = 0;
+static File *f_runtime = 0;
+static File *f_runtime_h = 0;
+static File *f_header = 0;
+static File *f_wrappers = 0;
+static File *f_directors = 0;
+static File *f_directors_h = 0;
+static File *f_init = 0;
+static int nortti = 0;
+static String *module = 0;
+static int curdepth = 0;
+
+#define INDENT "  "
+#define MAX_INDENT 20
+
+static String** makespace()
+{
+  TRACE;
+
+  String** ret = new String*[MAX_INDENT];
+  ret[0] = NewString("");
+  for (int i = 1; i < MAX_INDENT; i++)
+  {
+    ret[i] = NewString("");
+    Printf(ret[i],"%s%s",ret[i-1],INDENT);
+  }
+
+  return ret;
+}
+
+static String** spaces = makespace();
+
+#define _S spaces[curdepth]
+
+static String* currentClassName = NULL;
+static bool hasConstructor = false;
+static String* currentNamespace = NewString("");
+
+class IPCGEN:public Language {
+
+public:
+  IPCGEN()
+  { 
+    TRACE;
+    director_multiple_inheritance = 1;
+    director_language = 1;
+  }
+
+  /* ------------------------------------------------------------
+   * main()
+   * ------------------------------------------------------------ */
+
+  virtual void main(int argc, char *argv[])
+  {
+    TRACE;
+
+    for (int i = 1; i < argc; i++) {
+      if (argv[i]) {
+        if (strcmp(argv[i], "-noh") == 0) {
+	  no_header_file = 1;
+	  Swig_mark_arg(i);
+        }
+      }
+    }
+
+    Preprocessor_define((DOH *) "SWIG_CPLUSPLUS_CAST", 0);
+    Preprocessor_define("SWIGIPCGEN 1", 0);
+    SWIG_typemap_lang("ipcgen");
+    SWIG_config_file("ipcgen.swg");
+  }
+
+
+  /* ------------------------------------------------------------
+   * top()
+   * ------------------------------------------------------------ */
+
+  virtual int top(Node *n)
+  {
+    TRACE;
+    /* check if directors are enabled for this module.  note: this 
+     * is a "master" switch, without which no director code will be
+     * emitted.  %feature("director") statements are also required
+     * to enable directors for individual classes or methods.
+     *
+     * use %module(directors="1") modulename at the start of the 
+     * interface file to enable director generation.
+     */
+    String *mod_docstring = NULL;
+    {
+      Node *mod = Getattr(n, "module");
+      if (mod) {
+	Node *options = Getattr(mod, "options");
+	if (options) {
+	  int dirprot = 0;
+	  if (Getattr(options, "dirprot")) {
+	    dirprot = 1;
+	  }
+	  if (Getattr(options, "nodirprot")) {
+	    dirprot = 0;
+	  }
+	  if (Getattr(options, "directors")) {
+	    allow_directors();
+	    if (dirprot)
+	      allow_dirprot();
+	  }
+	}
+      }
+    }
+
+    /* Initialize all of the output files */
+    String *outfile = Getattr(n, "outfile");
+    String *outfile_h = !no_header_file ? Getattr(n, "outfile_h") : 0;
+
+    f_begin = NewFile(outfile, "w", SWIG_output_files());
+    if (!f_begin) {
+      FileErrorDisplay(outfile);
+      SWIG_exit(EXIT_FAILURE);
+    }
+    f_runtime = NewString("");
+    f_init = NewString("");
+    f_header = NewString("");
+    f_wrappers = NewString("");
+    f_directors_h = NewString("");
+    f_directors = NewString("");
+
+    if (directorsEnabled()) {
+      if (!no_header_file) {
+	f_runtime_h = NewFile(outfile_h, "w", SWIG_output_files());
+	if (!f_runtime_h) {
+	  FileErrorDisplay(outfile_h);
+	  SWIG_exit(EXIT_FAILURE);
+	}
+      } else {
+	f_runtime_h = f_runtime;
+      }
+    }
+
+    /* Register file targets with the SWIG file handler */
+    Swig_register_filebyname("header", f_header);
+    Swig_register_filebyname("wrapper", f_wrappers);
+    Swig_register_filebyname("begin", f_begin);
+    Swig_register_filebyname("runtime", f_runtime);
+    Swig_register_filebyname("init", f_init);
+    Swig_register_filebyname("director", f_directors);
+    Swig_register_filebyname("director_h", f_directors_h);
+
+    Swig_banner(f_begin);
+    Swig_banner(f_runtime_h);
+
+    Printf(f_runtime, "\n");
+    Printf(f_runtime, "#define SWIGIPCGEN\n");
+
+    if (directorsEnabled()) {
+      Printf(f_runtime, "#define SWIG_DIRECTORS\n");
+    }
+
+    /* Set module name */
+    module = Copy(Getattr(n, "name"));
+
+    Printf(f_runtime_h, "\n");
+    Printf(f_runtime_h, "#ifndef SWIG_%s_WRAP_H_\n", module);
+    Printf(f_runtime_h, "#define SWIG_%s_WRAP_H_\n\n", module);
+    if (directorsEnabled())
+    {
+      Printf(f_directors, "\n\n");
+      Printf(f_directors, "/* ---------------------------------------------------\n");
+      Printf(f_directors, " * C++ director class methods\n");
+      Printf(f_directors, " * --------------------------------------------------- */\n\n");
+      if (outfile_h)
+        Printf(f_directors, "#include \"%s\"\n\n", Swig_file_filename(outfile_h));
+    }
+
+    /* emit code */
+    Language::top(n);
+
+    if (directorsEnabled()) {
+      // Insert director runtime into the f_runtime file (make it occur before %header section)
+      Swig_insert_file("director.swg", f_runtime);
+    }
+
+    /* Close all of the files */
+    Dump(f_runtime, f_begin);
+    Dump(f_header, f_begin);
+
+    if (directorsEnabled()) {
+      Dump(f_directors_h, f_runtime_h);
+      Printf(f_runtime_h, "\n");
+      Printf(f_runtime_h, "#endif\n");
+      if (f_runtime_h != f_begin)
+	Close(f_runtime_h);
+      Dump(f_directors, f_begin);
+    }
+
+    Dump(f_wrappers, f_begin);
+    Wrapper_pretty_print(f_init, f_begin);
+
+    Delete(f_header);
+    Delete(f_wrappers);
+    Delete(f_init);
+    Delete(f_directors);
+    Delete(f_directors_h);
+
+    Close(f_begin);
+    Delete(f_runtime);
+    Delete(f_begin);
+
+    return SWIG_OK;
+  }
+
+  /**
+   *
+   */
+  virtual int namespaceDeclaration(Node *n)
+  {
+    TRACE;
+
+    int ret = Language::namespaceDeclaration(n);
+
+    if (Getattr(n, "ipcgen:opened"))
+    {
+      curdepth--;
+      Printv(f_runtime_h,"\n",_S,"}\n\n", NIL);
+    }
+
+    return ret;
+  }
+
+  void openNamespace(Node* n)
+  {
+    TRACE;
+    bool foundNamespaceNode = false;
+    Node *curns = n;
+
+    String* namespaceConst = NewString("namespace");
+
+    while (!foundNamespaceNode && curns)
+    {
+      if (Strcmp(namespaceConst,nodeType(curns)))
+        curns = parentNode(curns);
+      else
+        foundNamespaceNode = true;
+    }
+
+    if (foundNamespaceNode)
+    {
+      if (!Getattr(curns, "ipcgen:opened"))
+      {
+        Node* parentns = parentNode(curns);
+        if (parentns)
+          openNamespace(parentns);
+
+        Printv(f_runtime_h,_S,"namespace ",Getattr(curns,"name"), "\n", _S, "{\n", NIL);
+        curdepth++;
+
+        String* nextns = NewString("");
+        Printv(nextns,currentNamespace,"::",Getattr(curns,"name"),NIL);
+        Delete(currentNamespace);
+        currentNamespace = nextns;
+        Setattr(curns, "ipcgen:opened", "true");
+      }
+    }
+
+    Delete(namespaceConst);
+  }
+
+  /* ------------------------------------------------------------
+   * classDeclaration()
+   * ------------------------------------------------------------ */
+
+  virtual int classDeclaration(Node *n) {
+    TRACE;
+
+    return Language::classDeclaration(n);
+  }
+
+  /* ------------------------------------------------------------
+   * classHandler()
+   * ------------------------------------------------------------ */
+
+  virtual int classHandler(Node *n) 
+  {
+    TRACE;
+
+    openNamespace(n);
+
+    /* Create new strings for building up a wrapper function */
+    String *class_name = Getattr(n, "sym:name");
+    String *real_classname = Getattr(n, "name");
+
+    Printf(stdout,"%sClassname: %s\n",_S,class_name);
+    Printf(stdout,"%sReal Classname:%s\n",_S,real_classname);
+
+    if (!addSymbol(class_name, n))
+      return SWIG_ERROR;
+
+    /* Handle inheritance */
+    String *base_class = NewString("");
+    List *baselist = Getattr(n, "bases");
+    if (baselist && Len(baselist)) {
+      Iterator b;
+      b = First(baselist);
+      while (b.item) {
+        String* bname = Getattr(b.item, "sym:name");
+        Printv(base_class, "public ", bname, NIL);
+        b = Next(b);
+        if (b.item) {
+          Putc(',', base_class);
+        }
+      }
+    }
+
+
+    Printv(f_runtime_h, _S, "class ", class_name, NIL);
+    currentClassName = NewString(class_name);
+
+    if (Len(base_class)) {
+      Printf(f_runtime_h, ": %s", base_class);
+    }
+
+    Printf(f_runtime_h, "\n%s{\n",_S);
+    curdepth++;
+
+//    dumpSymbols();
+    // reset hasConstructor
+    hasConstructor = false;
+    int ret = Language::classHandler(n);
+
+    // did we find a constructor?
+    if (!hasConstructor)
+    {
+      // we need to emmit a default constructor
+      Printv(f_runtime_h,class_name,"() { ref = New_", "(); }",NIL);
+    }
+    hasConstructor = false;
+
+    if (ret == SWIG_OK)
+    {
+      curdepth--;
+      Printf(f_runtime_h, "%s};\n\n",_S);
+    }
+
+    Delete(currentClassName);
+    currentClassName = NULL;
+
+    return ret;
+  }
+
+  virtual int functionWrapper(Node *n) 
+  {
+    TRACE;
+    String *nodeType = Getattr(n, "nodeType");
+    bool constructor = (!Cmp(nodeType, "constructor"));
+    bool destructor = (!Cmp(nodeType, "destructor"));
+
+
+//    if (!constructor && !destructor)
+    {
+      String *name = constructor ? currentClassName : Getattr(n, "name");
+//      String *iname = Getattr(n, "sym:name");
+      String* returnType = Getattr(n, "type");
+      SwigType *d = Getattr(n, "type");
+      ParmList *plist = Getattr(n, "parms");
+      int director_method = 0;
+
+
+
+      if (constructor || destructor)
+        Printf(f_runtime_h, "%s%s(", _S, name);
+      else
+        Printf(f_runtime_h, "%s%s %s(", _S, returnType, name);
+
+      Parm *p;
+      bool alreadyDidAParam = false;
+      bool selfDone = false;
+      for (p = plist; p; p = nextSibling(p)) 
+      {
+        // self is always the first parameter.
+        if (selfDone || constructor)
+        {
+          String* pname = Getattr(p, "name");
+          String* ptype = Getattr(p, "type");
+//          String* pvalue = Getattr(p, "value");
+
+          if (alreadyDidAParam)
+            Printv(f_runtime_h,", ",NIL);
+
+          Printf(f_runtime_h, "%s %s", ptype, pname);
+
+          alreadyDidAParam = true;
+        }
+        else
+          selfDone = true;
+      }
+
+      Printf(f_runtime_h, ")\n");
+      Printf(f_runtime_h, "%s{\n", _S);
+      curdepth++;
+//      Printv(f_runtime_h,_S,Swig_name_wrapper(Getattr(n, "name")),"();","\n",NIL);
+//      Printv(f_runtime_h,_S,Swig_name_wrapper(n),"();","\n",NIL);
+      curdepth--;
+      Printf(f_runtime_h, "%s}\n\n", _S);
+    }
+  }
+
+  virtual int constructorHandler(Node *n) {
+    TRACE;
+    String *name = Getattr(n, "name");
+//    String *iname = Getattr(n, "sym:name");
+
+//    Printf(f_runtime_h, "%sconstructor: %s, %s\n",_S,name,name);
+    hasConstructor = true;
+    functionWrapper(n);
+  }
+};
+
+
+/* -----------------------------------------------------------------------------
+ * swig_python()    - Instantiate module
+ * ----------------------------------------------------------------------------- */
+
+static Language *new_swig_ipcgen() {
+  TRACE;
+  return new IPCGEN();
+}
+
+extern "C" Language *swig_ipcgen(void) {
+  TRACE;
+  return new_swig_ipcgen();
+}
