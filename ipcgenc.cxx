@@ -25,7 +25,6 @@ static File *f_parent_wrappers = 0;
 static File *f_parent_init = 0;
 static File *f_parent_table = 0;
 static String *module = 0;
-static bool tableEntryMade = false;
 
 class IPCGEN:public Language {
 
@@ -48,7 +47,7 @@ public:
     SWIG_library_directory("ipcgen");
     Preprocessor_define((DOH *) "SWIG_CPLUSPLUS_CAST", 0);
     Preprocessor_define("SWIGIPCGEN_PARENT 1", 0);
-    SWIG_config_file("ipcgenp.swg");
+    SWIG_config_file("ipcgenc.swg");
     SWIG_typemap_lang("ipcgen");
   }
 
@@ -109,7 +108,6 @@ public:
     f_parent_init = NewString("");
     f_parent_header = NewString("");
     f_parent_wrappers = NewString("");
-    f_parent_table = NewString(""); // this holds the function pointer table
 
     /* Register file targets with the SWIG file handler */
     Swig_register_filebyname("header", f_parent_header);
@@ -133,24 +131,10 @@ public:
 
     // This sets the template for how wrapper names will be generated. Notice we
     //  are actually writing implementations of the methods/functions.
-    Swig_name_register("wrapper", "wrap_parent_%f");
-
-    // Set up the dispatch table for incomming messages.
-    String* tableHeader = NewString("");
-    Printv(tableHeader, 
-           "typedef void (*IpcParentMethod)(Message&,Message&);\n", 
-           "static IpcParentMethod parentWrapperTable[] = {\n", 
-           NIL);
-
-    String* closeTable = NewString("");
-    Printv(closeTable,"\n};",NIL);
+    Swig_name_register("wrapper", "wrap_child_%f");
 
     /* emit code */
     Language::top(n);
-
-    Dump(tableHeader, f_parent_wrappers);
-    Dump(f_parent_table, f_parent_wrappers);
-    Dump(closeTable, f_parent_wrappers);
 
     /* Close all of the files */
     Dump(f_parent_runtime, f_parent_begin);
@@ -160,7 +144,6 @@ public:
 
     Wrapper_pretty_print(f_parent_init, f_parent_begin);
 
-    Delete(tableHeader);
     Delete(f_parent_header);
     Delete(f_parent_wrappers);
     Delete(f_parent_init);
@@ -190,20 +173,14 @@ public:
 
     // Make a wrapper name for this function
     String *wname = Swig_name_wrapper(symname);
-    String* fdef = NewString("");
 
-    // add this method to the table
-    Printv(f_parent_table, (tableEntryMade ? ",\n  " : "  "), wname, NIL);
-    tableEntryMade = true;
-
-    //SwigType_str(returnType,NIL);
-    Printv(fdef, "SWIGINTERN ", "void", " ", wname, "(Message& params, Message& ret)",NIL);
-    Printv(fdef, "\n{", NIL);
+    Printv(f->def, "SWIGINTERN ", SwigType_str(returnType,NIL), " ", wname, "(MessageChannel& calling, MessageChannel& returning",NIL);
 
     // Now walk the function parameter list and generate code to get arguments
 
     /* Attach the standard typemaps */
     Swig_typemap_attach_parms("ctype", plist, f);
+    Swig_typemap_attach_parms("imtype", plist, f);
     emit_attach_parmmaps(plist, f);
 
     Parm *p;
@@ -214,18 +191,29 @@ public:
 
     for (p = plist; p; p = nextSibling(p)) 
     {
-      // make sure there is a typemap for this type. Everything needs a typemap
-      if (!Getattr(p,"tmap:in"))
-      {
-        Swig_error(input_file,line_number,"Typemaps must be defined for all parameters.\n");
-        return SWIG_ERROR;
-      }
+      String *im_param_type = NewString("");
 
       String *arg = NewString("");
       String* lname = Getattr(p, "lname");
       SwigType* ptype = Getattr(p, "type");
 
-      Printf(arg, "%s", lname);
+      // make sure there is a typemap for this type. Everything needs a typemap
+      if (!Getattr(p,"tmap:in"))
+      {
+        Swig_error(input_file,line_number,"Typemaps must be defined for all parameters. Function \"%s\" is missing type \"%s\"\n",symname,SwigType_str(ptype, 0));
+        return SWIG_ERROR;
+      }
+
+      // make sure there is a typemap for this type. Everything needs a typemap
+      if (!Getattr(p,"tmap:imtype"))
+      {
+        Swig_error(input_file,line_number,"Intermediate typemaps must be defined for all parameters. Function \"%s\" is missing type \"%s\"\n",symname,SwigType_str(ptype, 0));
+        return SWIG_ERROR;
+      }
+
+      Printf(arg, "p%s", lname);
+
+      Printv(f->def, "," , SwigType_str(ptype,NIL), " ", arg, NIL);
 
       // Get typemap for this argument
       tm = Getattr(p, "tmap:in");
@@ -233,14 +221,20 @@ public:
       Setattr(p, "emit:input", arg);
       Printf(f->code, "%s\n", tm);
 
+      tm = Getattr(p, "tmap:imtype");
+      Replaceall(tm, "$input", arg);
+      Setattr(p, "emit:input", arg);
+      Printf(f->code, "%s\n", tm);
+
       Delete(arg);
+      Delete(im_param_type);
     }
 
-    Printv(f->def, fdef, NIL);
+    Printv(f->def, ")\n{", NIL);
 
     // Emit all of the local variables for holding arguments.
     emit_parameter_variables(plist, f);
- //    emit_return_variable(n,returnType,f);
+    emit_return_variable(n,returnType,f);
 
     //emit_args(t,l,f);
 
@@ -251,7 +245,9 @@ public:
     //  to be set.
     Setattr(n, "wrap:parms", plist);
     Setattr(n, "wrap:name", wname);
-    String* actioncode = emit_action(n);
+    String* actioncode = NewString("");
+    Printv(actioncode,"message.flip();\n", "calling.send(message);\n", "message.clear();\n","message.flip();\n",NIL);
+
     tm = Swig_typemap_lookup_out("out", n, "result", f, actioncode);
     if (tm)
     {
@@ -260,6 +256,10 @@ public:
     }
     else
       Printv(f->code,actioncode,NIL);
+
+    bool is_void_return = (Cmp(returnType, "void") == 0);
+    if (!is_void_return)
+      Printv(f->code, "    return result;\n", NIL);
 
     // need to restore the swig state
     Printv(f->code,"}",NIL);
