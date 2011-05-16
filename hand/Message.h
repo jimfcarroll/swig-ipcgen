@@ -11,7 +11,7 @@ namespace XbmcIpc
     std::string message;
 
   public:
-    MessageException(const char* _message) : message(_message) {}
+    MessageException(const char* message_) : message(message_) {}
   };
 
   class Message
