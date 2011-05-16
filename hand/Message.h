@@ -31,7 +31,7 @@ namespace XbmcIpc
     }
 
   public:
-    Message(void* _buffer, size_t bufferSize) : buffer((byte*)_buffer), mcapacity(bufferSize), owner(false) { clear(); }
+    Message(void* buffer_, size_t bufferSize) : buffer((byte*)buffer_), mcapacity(bufferSize), owner(false) { clear(); }
     Message(size_t bufferSize) : buffer(new byte[bufferSize]), mcapacity(bufferSize), owner(true) { clear(); }
     ~Message() { if (owner) delete [] buffer; }
 
@@ -48,7 +48,7 @@ namespace XbmcIpc
     size_t capacity() const { return mcapacity; }
     size_t position() const { return mposition; }
 
-#define DEFAULTMESSAGERELATIVERW(name,type)                             \
+#define DEFAULTMESSAGERELATIVERW(name,type) \
     inline Message& put##name(const type & val) throw(MessageException) { return put(&val, sizeof(type)); } \
     inline type get##name() throw(MessageException) { type ret; get(&ret, sizeof(type)); return ret; }
 
