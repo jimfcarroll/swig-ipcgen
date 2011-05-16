@@ -1,0 +1,7 @@
+#global patterns
+
+*.o
+*.so
+test.xml
+*_wrap*
+*.cs
