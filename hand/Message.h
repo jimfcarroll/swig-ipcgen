@@ -48,8 +48,26 @@ namespace XbmcIpc
    *  Message message(1024);
    *  message.putInt(1).putString("hello there").putLongLong( ((long long)2)^40 );
    *  message.flip();
-   *  printf("message contents: %d, \"%s\", %ll\n", message.getInt(), 
+   *  std::cout << "message contents:" << message.getInt() << ", ";
+   *  std::cout << message.getCharPointerDirect() << ", ";
+   *  std::cout << message.getLongLong() << std::endl;
+   *
+   * Note: the 'gets' are sensitive to the order-of-operations. Therefore, while
+   *  the above is correct, it would be wrong to chain the output as follows:
+   *
+   *  std::cout << "message contents:" << message.getInt() << ", " << std::cout
+   *      << message.getCharPointerDirect() << ", " << message.getLongLong() 
+   *      << std::endl;
+   *
+   * This would result in the get's executing from right to left and therefore would
+   *  produce totally erroneous results. This is also a problem when the values are
+   *  passed to a method as in:
+   *
+   * printf("message contents: %d, \"%s\", %ll\n", message.getInt(), 
    *         message.getCharPointerDirect(), message.getLongLong());
+   *
+   * This would also produce erroneous results as they get's will be evaluated
+   *   from right to left in the parameter list of printf.
    */
   class Message
   {
@@ -145,8 +163,8 @@ namespace XbmcIpc
     DEFAULTMESSAGERELATIVERW(LongLong,long long);
 #undef DEFAULTMESSAGERELATIVERW
 
-    inline Message& putString(const char* str) throw (MessageException) { size_t len = strlen(str) + 1; check(len); put(str, len); }
-    inline Message& putString(const std::string& str) throw (MessageException) { size_t len = str.length() + 1; check(len); put(str.c_str(), len); }
+    inline Message& putString(const char* str) throw (MessageException) { size_t len = strlen(str) + 1; check(len); put(str, len); return (*this); }
+    inline Message& putString(const std::string& str) throw (MessageException) { size_t len = str.length() + 1; check(len); put(str.c_str(), len); return (*this); }
 
     inline std::string getString() throw (MessageException) { std::string ret((const char*)(buffer + mposition)); size_t len = ret.length() + 1; check(len); mposition += len; return ret; }
     inline char* getCharPointerDirect() throw (MessageException) { char* ret = (char*)(buffer + mposition); size_t len = strlen(ret) + 1; check(len); mposition += len; return ret; }
