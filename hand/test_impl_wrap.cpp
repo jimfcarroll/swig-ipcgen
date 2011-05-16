@@ -3,44 +3,49 @@
 
 #include "MessageChannel.h"
 
-using namespace XBMCIPC;
+using namespace XbmcIpc;
 
-struct func_params
-{
-  int arg1;
-};
-
-struct func_message
-{
-  int functionIndex;
-  struct func_params params;
-};
-
-void implwrap_func(struct func_params* params)
+void implwrap_func(Message& message, Message& ret)
 {
   int arg1;
 
-  arg1 = params->arg1;
+  arg1 = message.getInt();
 
-  func(arg1);
+  std::string result;
+  result = func(arg1);
+
+  ret.putString(result);
 }
 
-typedef void (*plainFunc)(void*);
-static plainFunc ftab[1] = { (plainFunc)implwrap_func };
-
-//void setupFuncs()
-//{
-//  key_t shmkey = MessageChannel::ChannelKey::makeShmKey(-1);
-//  shmid = shmget(shmkey,1024,IPC_CREAT | 0666);
-//  void* data = shmat(shmid,NULL,0);
-//  memset(data,0,1024);
-//  memcpy(data,&ftab, sizeof(plainFunc) * 1);
-//}
-
-void handleMessage(MessageChannel& mc)
+void implwrap_func2(Message& message, Message& ret)
 {
-  func_message* message = (func_message*)mc.receive();
-  (*ftab[message->functionIndex])(&(message->params));
+  std::string arg1;
+
+  arg1 = message.getString();
+
+  int result;
+  result = func2(arg1.c_str());
+
+  ret.putInt(result);
+}
+
+
+typedef void (*plainFunc)(Message&,Message&);
+static plainFunc ftab[2] = { 
+  (plainFunc)implwrap_func,
+  (plainFunc)implwrap_func2 
+};
+
+void handleMessage(MessageChannel& calling, MessageChannel& returning)
+{
+  Message incomming(1024);
+  Message outgoing(1024);
+  calling.receive(incomming);
+  incomming.flip();
+  (*ftab[incomming.getInt()])(incomming,outgoing);
+
+  outgoing.flip();
+  returning.send(outgoing);
 }
 
 

@@ -4,7 +4,9 @@
 #include <sys/types.h>
 #include <sys/sem.h>
 
-namespace XBMCIPC
+#include "Message.h"
+
+namespace XbmcIpc
 {
 
   /**
@@ -22,6 +24,7 @@ namespace XBMCIPC
     sembuf op;
     short semval;
 
+    void send(const void* data, int len);
   public:
     static const int XSHM_FAILED = 0x01;
     static const int XSEM_FAILED = 0x02;
@@ -35,17 +38,17 @@ namespace XBMCIPC
       friend class MessageChannel;
 
     public:
-      static key_t makeShmKey(unsigned char channelNumber);
-      static key_t makeSemKey(unsigned char channelNumber);
+      static key_t makeKey(unsigned char channelNumber,char c3);
 
-      ChannelKey(unsigned char channelNumber) : semKey(makeSemKey(channelNumber)), shmKey(makeShmKey(channelNumber)) {}
+      ChannelKey(unsigned char channelNumber) : semKey(makeKey(channelNumber,'S')),
+                                                shmKey(makeKey(channelNumber,'M')) {}
     };
 
     ChannelKey ckey;
 
     MessageChannel();
     bool isOk() { return status == 0; }
-    void* receive();
-    void send(const void* data, int len);
+    void receive(Message& messageToFill);
+    void send(const Message& message) { send(message.array(), message.limit());  }
   };
 }

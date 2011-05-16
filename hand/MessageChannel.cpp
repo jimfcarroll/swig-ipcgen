@@ -7,7 +7,30 @@
 
 #include "MessageChannel.h"
 
-namespace XBMCIPC
+// 64-bit = worst case word align
+#define WORDALIGN 8
+
+#define BLOCK_DECR(semnum) \
+    op.sem_num = semnum; \
+    op.sem_op = -1; \
+    if (semop(semid,&op,1) < 0) \
+      status |= XSEM_FAILED
+
+#define INCR(semnum) \
+    op.sem_num = semnum; \
+    op.sem_op = 1; \
+    if (semop(semid,&op,1) < 0) \
+      status |= XSEM_FAILED
+
+#define WAIT_FOR_NONE(semnum) \
+    op.sem_num = 0; \
+    op.sem_op = 0; \
+    if (semop(semid,&op,1) < 0) \
+      status |= XSEM_FAILED
+
+#define SHM_MUTEX 1
+
+namespace XbmcIpc
 {
 
   unsigned char MessageChannel::sequence = 0;
@@ -25,7 +48,13 @@ namespace XBMCIPC
       return;
     }
 
-    semid = semget(ckey.semKey,1,IPC_CREAT | 0777);
+    // try to get the sem ... see if it already exists
+    semid = semget(ckey.semKey,0,0);
+
+    if (semid != -1)
+      semctl(semid,0,IPC_RMID);
+
+    semid = semget(ckey.semKey,2,IPC_CREAT | 0777);
 
     if (semid < 0)
     {
@@ -42,7 +71,7 @@ namespace XBMCIPC
     data = shmat(shmid,NULL,0);
   }
 
-  static key_t makeKey(unsigned char channelNumber, char c3)
+  key_t MessageChannel::ChannelKey::makeKey(unsigned char channelNumber, char c3)
   {
     union 
     {
@@ -61,33 +90,40 @@ namespace XBMCIPC
     return myKey.k;
   }
 
-  key_t MessageChannel::ChannelKey::makeShmKey(unsigned char channelNumber) { return makeKey(channelNumber,'M'); }
-  key_t MessageChannel::ChannelKey::makeSemKey(unsigned char channelNumber) { return makeKey(channelNumber,'S'); }
-
-  void* MessageChannel::receive()
+  void MessageChannel::receive(Message& messageToFill)
   {
     status = 0;
-    op.sem_num = 0;
-    op.sem_op = -1;
 
-    if (semop(semid,&op,1) < 0)
-    {
-      status |= XSEM_FAILED;
-      return NULL;
-    }
+    BLOCK_DECR(0); // wait for a message
+    BLOCK_DECR(SHM_MUTEX); // grab access to the shm
 
-    return data;
+    int len;
+    memcpy(&len, data, sizeof(int));
+//    printf("receive: read %i from len\n",len);
+
+    if (len > 0)
+      messageToFill.put( ((unsigned char*)data) + WORDALIGN, len);
+
+//    printf("receive: writing 0 to len\n");
+    memset(data, 0, sizeof(int)); // clear the len
+
+    // OK, reset the read sem
+    INCR(SHM_MUTEX); // release access to the shm
   }
 
   void MessageChannel::send(const void* message, int len)
   {
     status = 0;
-    op.sem_num = 0;
-    op.sem_op = 1;
-    if (semop(semid,&op,1) < 0)
-      status |= XSEM_FAILED;
-    else
-      memcpy(data,message,len);
-  }
 
+    BLOCK_DECR(SHM_MUTEX); // grab access to the read
+
+    // I have access now so I can go ahead and set the message
+    // write data
+//    printf("send: writing %i to len\n",len);
+    memcpy(data,&len,sizeof(int));
+    memcpy(((unsigned char*)data) + WORDALIGN,message,len);
+
+    INCR(0); // flag a message available
+    INCR(SHM_MUTEX); // release the access
+  }
 }
