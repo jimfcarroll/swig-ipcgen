@@ -7,7 +7,7 @@
 //%include <swig.swg>
 
 %{
-#include "hand/MessageChannel.h"
+#include "MessageChannel.h"
 %}
 
 %typemap(in) char, 

@@ -7,7 +7,7 @@
 //{
 //  int func(const char* param);
 //
-  std::string func2(int param);
+std::string func2(int param);
 //  void func3(int param1, const char* param2, double param3, long long param4);
 //
 //  class MyClass;
